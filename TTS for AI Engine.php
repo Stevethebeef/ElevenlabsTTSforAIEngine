@@ -13,12 +13,15 @@ if (!defined('WPINC')) {
     die;
 }
 
-// Enqueue the chat-audio.js script
+// Global variable to store service type
+$GLOBALS['service_type'] = null;
+
+// Enqueue the js script for autoplay settings
 function tts_plugin_enqueue_scripts() {
     wp_enqueue_script(
-        'chat-audio',
-        plugin_dir_url(__FILE__) . 'chat-audio.js',
-        array('jquery'),
+        'autoplay-control',
+        plugin_dir_url(__FILE__) . 'autoplay-control.js',
+        array(),
         '1.0.0',
         true
     );
@@ -34,6 +37,7 @@ function tts_plugin_add_settings_page() {
         'tts-plugin-settings',
         'tts_plugin_settings_page'
     );
+    tts_plugin_log("Added Text to Speech settings page");
 }
 add_action('admin_menu', 'tts_plugin_add_settings_page');
 
@@ -41,11 +45,15 @@ add_action('admin_menu', 'tts_plugin_add_settings_page');
 function tts_plugin_register_settings() {
     register_setting('tts-plugin-settings-group', 'tts-plugin-api-key');
     register_setting('tts-plugin-settings-group', 'tts-plugin-voice-id');
+    register_setting('tts-plugin-settings-group', 'tts-plugin-log-activation');
+    register_setting('tts-plugin-settings-group', 'tts-plugin-mp3-removal-interval');
+    tts_plugin_log("Registered settings");
 }
 add_action('admin_init', 'tts_plugin_register_settings');
 
 // Render the settings page
 function tts_plugin_settings_page() {
+    tts_plugin_log("Rendering settings page");
     ?>
     <div class="wrap">
         <h1>Text to Speech Settings</h1>
@@ -67,6 +75,18 @@ function tts_plugin_settings_page() {
                         <?php tts_plugin_voice_id_field_callback(); ?>
                     </td>
                 </tr>
+                <tr>
+                    <th scope="row">Activate Log</th>
+                    <td>
+                        <?php tts_plugin_log_activation_field_callback(); ?>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">MP3 Removal Interval (in hours)</th>
+                    <td>
+                        <?php tts_plugin_mp3_removal_interval_field_callback(); ?>
+                    </td>
+                </tr>
             </table>
 
             <?php submit_button(); ?>
@@ -79,6 +99,7 @@ function tts_plugin_settings_page() {
 function tts_plugin_api_key_field_callback() {
     $api_key = get_option('tts-plugin-api-key');
     echo '<input type="text" name="tts-plugin-api-key" value="' . esc_attr($api_key) . '" />';
+    tts_plugin_log("API Key field rendered");
 }
 
 // Voice ID field callback function
@@ -88,11 +109,13 @@ function tts_plugin_voice_id_field_callback() {
 
     if (empty($api_key)) {
         echo 'Please enter your API Key to fetch the voices.';
+        tts_plugin_log("API Key empty");
     } else {
         $voices = tts_plugin_get_voices($api_key);
 
-        if ($voices === false) {
-            echo 'Failed to fetch voices. Please check your API Key.';
+        if (is_wp_error($voices)) {
+            echo '<p class="error">Error fetching voices: ' . $voices->get_error_message() . '</p>';
+            tts_plugin_log("Error fetching voices: " . $voices->get_error_message());
         } else {
             echo '<select name="tts-plugin-voice-id">';
 
@@ -102,13 +125,28 @@ function tts_plugin_voice_id_field_callback() {
             }
 
             echo '</select>';
-       
+            tts_plugin_log("Voice ID field rendered");
         }
     }
 }
 
+// Log Activation field callback function
+function tts_plugin_log_activation_field_callback() {
+    $log_activation = get_option('tts-plugin-log-activation');
+    echo '<input type="checkbox" name="tts-plugin-log-activation" value="1" ' . checked(1, $log_activation, false) . ' />';
+    tts_plugin_log("Log Activation field rendered");
+}
+
+// MP3 Removal Interval field callback function
+function tts_plugin_mp3_removal_interval_field_callback() {
+    $interval = get_option('tts-plugin-mp3-removal-interval');
+    echo '<input type="number" min="1" name="tts-plugin-mp3-removal-interval" value="' . esc_attr($interval) . '" /> hours';
+    tts_plugin_log("MP3 Removal Interval field rendered");
+}
+
 // Function to fetch voices from the ElevenLabs API
 function tts_plugin_get_voices($api_key) {
+    tts_plugin_log("Fetching voices from ElevenLabs API");
     $url = 'https://api.elevenlabs.io/v1/voices';
 
     $response = wp_remote_get($url, [
@@ -119,16 +157,19 @@ function tts_plugin_get_voices($api_key) {
     ]);
 
     if (is_wp_error($response)) {
-        return false;
+        tts_plugin_log("Error in fetching voices: " . $response->get_error_message());
+        return $response;
     }
 
     $body = wp_remote_retrieve_body($response);
     $data = json_decode($body, true);
 
     if (!$data || !isset($data['voices'])) {
-        return false;
+        tts_plugin_log("Failed to fetch voices");
+        return new WP_Error('failed_fetch_voices', 'Failed to fetch voices.');
     }
 
+    tts_plugin_log("Voices fetched successfully");
     return $data['voices'];
 }
 
@@ -138,29 +179,31 @@ function tts_plugin_convert_to_speech($text) {
     $voice_id = get_option('tts-plugin-voice-id');
 
     if (empty($api_key) || empty($voice_id)) {
+        tts_plugin_log("API Key or Voice ID is empty");
         return $text;
     }
 
-    // Logging
-    $log_message = "Converting text to speech: $text";
-    tts_plugin_log($log_message);
+    tts_plugin_log("Converting text to speech: $text");
 
     $url = 'https://api.elevenlabs.io/v1/text-to-speech/' . $voice_id;
 
-$response = wp_remote_post($url, [
-    'headers' => [
-        'xi-api-key' => $api_key,
-        'Content-Type' => 'application/json',
-        'Accept' => 'audio/mpeg'
-    ],
-    'body' => json_encode([
-        'text' => $text
-    ]),
-    'timeout' => 30 // Set the timeout to 30 seconds
-]);
+    $response = wp_remote_post($url, [
+        'headers' => [
+            'xi-api-key' => $api_key,
+            'Content-Type' => 'application/json',
+            'Accept' => 'audio/mpeg'
+        ],
+        'body' => json_encode([
+            'text' => $text,
+			'model_id'=> 'eleven_multilingual_v1'
+		]),
+        'timeout' => 30 // Set the timeout to 30 seconds
+    ]);
 
-
-    if (!is_wp_error($response)) {
+    if (is_wp_error($response)) {
+        tts_plugin_log("Failed to convert text to speech: " . $response->get_error_message());
+        return $text;
+    } else {
         $audio = wp_remote_retrieve_body($response);
 
         if (!empty($audio)) {
@@ -171,39 +214,91 @@ $response = wp_remote_post($url, [
 
             $file_url = $upload_dir['url'] . '/' . $filename;
 
-            // Logging
-            $log_message = "MP3 file generated: $file_url";
-            tts_plugin_log($log_message);
+            tts_plugin_log("MP3 file generated: $file_url");
 
             return '<audio controls autoplay><source src="' . $file_url . '" type="audio/mpeg"></audio>';
         }
     }
 
+    tts_plugin_log("Failed to convert text to speech");
     return $text;
 }
 
 // Filter the AI Engine reply to convert text to speech
 function tts_plugin_convert_reply_to_speech($reply) {
-    if (isset($reply->result)) {
-        // Logging
-        $log_message = "Original text: $reply->result";
-        tts_plugin_log($log_message);
+    // Log the raw input data
+    tts_plugin_log("Received input: " . json_encode($reply, JSON_PRETTY_PRINT));
 
+    // Check if the service type is 'tts' before converting to speech
+    if (isset($reply->result)) {
+        $original_text = $reply->result;
         $reply->result = tts_plugin_convert_to_speech($reply->result);
 
-        // Logging
-        $log_message = "Converted text: $reply->result";
-        tts_plugin_log($log_message);
+        // Log both the original and the converted text
+        tts_plugin_log("Original text: $original_text");
+        tts_plugin_log("Converted text: $reply->result");
     }
+
+    // Log the output data
+    tts_plugin_log("Returning output: " . json_encode($reply, JSON_PRETTY_PRINT));
 
     return $reply;
 }
 add_filter('mwai_ai_reply', 'tts_plugin_convert_reply_to_speech', 10, 1);
 
+
 // Function to log messages to a file
 function tts_plugin_log($message) {
-    $log_file = wp_upload_dir()['basedir'] . '/tts-plugin-log.txt';
-    $timestamp = date('Y-m-d H:i:s');
-    $log_message = "[$timestamp] $message" . PHP_EOL;
-    file_put_contents($log_file, $log_message, FILE_APPEND);
+    $log_activation = get_option('tts-plugin-log-activation');
+
+    if ($log_activation) {
+        $log_file = wp_upload_dir()['basedir'] . '/tts-plugin-log.txt';
+        $timestamp = date('Y-m-d H:i:s');
+        $log_message = "[$timestamp] $message" . PHP_EOL;
+        file_put_contents($log_file, $log_message, FILE_APPEND);
+    }
 }
+
+// Function to remove mp3 files periodically
+function tts_plugin_remove_mp3_files() {
+    tts_plugin_log("Started MP3 files removal");
+
+    $interval = get_option('tts-plugin-mp3-removal-interval');
+    $upload_dir = wp_upload_dir()['basedir'];
+    $files = glob($upload_dir . '/tts-audio-*.mp3');
+
+    foreach ($files as $file) {
+        if (filemtime($file) < time() - 60 * 60 * $interval) {
+            unlink($file);
+
+            tts_plugin_log("Removed MP3 file: $file");
+        }
+    }
+
+    tts_plugin_log("Finished MP3 files removal");
+}
+add_action('init', 'tts_plugin_remove_mp3_files');
+
+// Schedule event to remove mp3 files periodically
+if (!wp_next_scheduled('tts_plugin_remove_mp3_files')) {
+    tts_plugin_log("Scheduled MP3 files removal");
+    wp_schedule_event(time(), 'hourly', 'tts_plugin_remove_mp3_files');
+}
+
+
+// Filter the AI Engine query and log it
+function tts_plugin_log_ai_query($query) {
+    // Log the query data
+    tts_plugin_log("Received AI query: " . json_encode($query, JSON_PRETTY_PRINT));
+
+    // Save the service type globally
+    if (isset($query->service)) {
+        $GLOBALS['service_type'] = $query->service;
+        tts_plugin_log("Service type: " . $GLOBALS['service_type']);
+    }
+
+    return $query;
+}
+add_filter('mwai_ai_query', 'tts_plugin_log_ai_query', 10, 1);
+
+?>
