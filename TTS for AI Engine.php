@@ -5,7 +5,7 @@
  * Description: This plugin converts AI Engine text responses to speech using ElevenLabs API.
  * Version: 1.0.0
  * Author: Your Name
- * Author URI: https://yourwebsite.com/
+ * Author URI: https://escapebot.net/
  * License: GPL2
  */
 
@@ -230,7 +230,7 @@ function tts_plugin_convert_reply_to_speech($reply) {
     tts_plugin_log("Received input: " . json_encode($reply, JSON_PRETTY_PRINT));
 
     // Check if the service type is 'tts' before converting to speech
-    if (isset($reply->result)) {
+    if (isset($reply->result) && $GLOBALS['service_type'] !== 'tts') {
         $original_text = $reply->result;
         $reply->result = tts_plugin_convert_to_speech($reply->result);
 
